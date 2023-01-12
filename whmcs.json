@@ -1,0 +1,23 @@
+{
+  "schema": "1.0",
+  "type": "whmcs-registrars",
+  "name": "ua",
+  "license": "MIT",
+  "category": "domains",
+  "description": {
+    "name": "Hostmaster.ua Registry",
+    "tagline": "This EPP module can be used with Hostmaster.ua"
+  },
+  "logo": {
+    "filename": "logo.gif"
+  },
+  "support": {
+    "homepage": "https:\/\/getpinga.com\/"
+  },
+  "authors": [
+    {
+      "name": "Pinga",
+      "homepage": "https:\/\/getpinga.com\/"
+    }
+  ]
+}
