@@ -1932,7 +1932,7 @@ class ua_epp_client
 
 	function read()
 	{
-	    _epp_log('================= read-this =================', $this);
+	    _ua_log('================= read-this =================', $this);
 	    $hdr = stream_get_contents($this->socket, 4);
 	    if ($hdr === false) {
 		throw new exception('Connection appears to have closed.');
@@ -1943,19 +1943,19 @@ class ua_epp_client
 	    $unpacked = unpack('N', $hdr);
 	    $xml = fread($this->socket, ($unpacked[1] - 4));
 	    $xml = preg_replace('/></', ">\n<", $xml); 
-	    _epp_log('================= read =================', $xml);
+	    _ua_log('================= read =================', $xml);
 	    return $xml;
 	}
 
 	function write($xml, $action = 'Unknown')
 	{
-	    _epp_log('================= send-this =================', $this);
-	    _epp_log('================= send =================', $xml);
+	    _ua_log('================= send-this =================', $this);
+	    _ua_log('================= send =================', $xml);
 	    if (fwrite($this->socket, pack('N', (strlen($xml) + 4)) . $xml) === false) {
 		throw new exception('Error writing to the connection.');
 	    }
 	    $r = simplexml_load_string($this->readResponse());
-	    _epp_modulelog($xml, $r, $action);
+	    _ua_modulelog($xml, $r, $action);
 	    if ($r->response->result->attributes()->code >= 2000) {
 		throw new exception($r->response->result->msg);
 	    }
