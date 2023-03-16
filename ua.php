@@ -1,6 +1,7 @@
 <?php
 /**
- * Indera EPP registrar module for FOSSBilling (https://fossbilling.org/)
+ * Indera EPP registrar module for WHMCS (https://www.whmcs.com/)
+ * Supports Hostmaster.ua
  *
  * Written in 2023 by Taras Kondratyuk (https://getpinga.com)
  * Based on Generic EPP with DNSsec Registrar Module for WHMCS written in 2019 by Lilian Rudenco (info@xpanel.com)
@@ -8,85 +9,136 @@
  *
  * @license MIT
  */
-class Registrar_Adapter_UA extends Registrar_AdapterAbstract
+if (!defined("WHMCS")) {
+    die("This file cannot be accessed directly");
+}
+
+use Illuminate\Database\Capsule\Manager as Capsule;
+use Illuminate\Database\Schema\Blueprint;
+
+function ua_MetaData()
 {
-    public $config = array();
+    return array(
+        'DisplayName' => '.UA EPP Registry',
+        'APIVersion' => '1.0.1',
+    );
+}
 
-    public function __construct($options)
-    {
-        if(isset($options['username'])) {
-            $this->config['username'] = $options['username'];
-        }
-        if(isset($options['password'])) {
-            $this->config['password'] = $options['password'];
-        }
-        if(isset($options['host'])) {
-            $this->config['host'] = $options['host'];
-        }
-        if(isset($options['port'])) {
-            $this->config['port'] = $options['port'];
-        }
-        if(isset($options['registrarprefix'])) {
-            $this->config['registrarprefix'] = $options['registrarprefix'];
-        }
-    }
+function _ua_error_handler($errno, $errstr, $errfile, $errline)
+{
+	if (!preg_match("/epp/i", $errfile)) {
+		return true;
+	}
 
-    public function getTlds()
-    {
-        return array();
-    }
-    
-    public static function getConfig()
-    {
-        return array(
-            'label' => 'An EPP registry module allows registrars to manage and register domain names using the Extensible Provisioning Protocol (EPP). All details below are typically provided by the domain registry and are used to authenticate your account when connecting to the EPP server.',
-            'form'  => array(
-                'username' => array('text', array(
-                    'label' => 'EPP Server Username',
-                    'required' => true,
-                ),
-                ),
-                'password' => array('password', array(
-                    'label' => 'EPP Server Password',
-                    'required' => true,
-                ),
-                ),
-                'host' => array('text', array(
-                    'label' => 'EPP Server Host',
-                    'required' => true,
-                ),
-                ),
-                'port' => array('text', array(
-                    'label' => 'EPP Server Port',
-                    'required' => true,
-                ),
-                ),
-                'registrarprefix' => array('text', array(
-                    'label' => 'Registrar Prefix',
-                    'required' => true,
-                ),
-                ),
-            ),
-        );
-    }
-    
-    public function isDomaincanBeTransferred(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Checking if domain can be transferred: ' . $domain->getName());
-        return true;
-    }
+	_ua_log("Error $errno:", "$errstr on line $errline in file $errfile");
+}
 
-    public function isDomainAvailable(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Checking domain availability: ' . $domain->getName());
-		$s	= $this->connect();
-		$this->login();
+set_error_handler('_ua_error_handler');
+_ua_log('================= ' . date("Y-m-d H:i:s") . ' =================');
+
+function ua_getConfigArray($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	_ua_create_table();
+	_ua_create_column();
+
+	$configarray = array(
+		'FriendlyName' => array(
+			'Type' => 'System',
+			'Value' => 'UA',
+		),
+		'Description' => array(
+			'Type' => 'System',
+			'Value' => 'This module can be used with any registry that supports <a href="https://tools.ietf.org/html/rfc5731">RFC 5731</a>, <a href="https://tools.ietf.org/html/rfc5732">5732</a>, <a href="https://tools.ietf.org/html/rfc5733">5733</a>, <a href="https://tools.ietf.org/html/rfc5734">5734</a>',
+		),
+		'host' => array(
+			'FriendlyName' => 'EPP Server',
+			'Type' => 'text',
+			'Size' => '32',
+			'Description' => 'EPP Server Host.'
+		),
+		'port' => array(
+			'FriendlyName' => 'Server Port',
+			'Type' => 'text',
+			'Size' => '4',
+			'Default' => '700',
+			'Description' => 'System port number 700 has been assigned by the IANA for mapping EPP onto TCP.'
+		),
+		'tls_version' => array(
+			'FriendlyName' => 'Use TLS v1.3',
+			'Type' => 'yesno',
+			'Description' => 'Use more secure TLS v1.3 if the registry supports it.'
+		),
+		'verify_peer' => array(
+			'FriendlyName' => 'Verify Peer',
+			'Type' => 'yesno',
+			'Description' => 'Require verification of SSL certificate used.'
+		),
+		'cafile' => array(
+			'FriendlyName' => 'CA File',
+			'Type' => 'text',
+			'Default' => '',
+			'Description' => 'Certificate Authority file which should be used with the verify_peer context option <br />to authenticate the identity of the remote peer.'
+		),
+		'local_cert' => array(
+			'FriendlyName' => 'Certificate',
+			'Type' => 'text',
+			'Default' => 'cert.pem',
+			'Description' => 'Local certificate file. It must be a PEM encoded file.'
+		),
+		'local_pk' => array(
+			'FriendlyName' => 'Private Key',
+			'Type' => 'text',
+			'Default' => 'key.pem',
+			'Description' => 'Private Key.'
+		),
+		'passphrase' => array(
+			'FriendlyName' => 'Pass Phrase',
+			'Type' => 'password',
+			'Size' => '32',
+			'Description' => 'Enter pass phrase with which your certificate file was encoded.'
+		),
+		'clid' => array(
+			'FriendlyName' => 'Client ID',
+			'Type' => 'text',
+			'Size' => '20',
+			'Description' => 'Client identifier.'
+		),
+		'pw' => array(
+			'FriendlyName' => 'Password',
+			'Type' => 'password',
+			'Size' => '20',
+			'Description' => "Client's plain text password."
+		),
+		'registrarprefix' => array(
+			'FriendlyName' => 'Registrar Prefix',
+			'Type' => 'text',
+			'Size' => '4',
+			'Description' => 'Registry assigns each registrar a unique prefix with which that registrar must create contact IDs.'
+		)
+	);
+	return $configarray;
+}
+
+function _ua_startEppClient($params = array())
+{
+	$s = new ua_epp_client($params);
+	$s->login($params['clid'], $params['pw'], $params['registrarprefix']);
+	return $s;
+}
+
+function ua_RegisterDomain($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
 		$from = $to = array();
 		$from[] = '/{{ name }}/';
-		$to[] = htmlspecialchars($domain->getName());
+		$to[] = htmlspecialchars($params['domainname']);
 		$from[] = '/{{ clTRID }}/';
-		$clTRID = str_replace('.', '', round(microtime(1) , 3));
-		$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-check-' . $clTRID);
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-check-' . $clTRID);
 		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -101,313 +153,90 @@ class Registrar_Adapter_UA extends Registrar_AdapterAbstract
     <clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-
-		$r = $this->write($xml, __FUNCTION__);
+		$r = $s->write($xml, __FUNCTION__);
 		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->chkData;
 		$reason = (string)$r->cd[0]->reason;
-
-		if ($reason)
-		{
-			return false;
-		} else {
-			return true;
-		}
-		if (!empty($s))
-		{
-			$this->logout();
+		if (!$reason) {
+			$reason = 'Domain is not available';
 		}
 
-        return true;
-    }
-
-    public function modifyNs(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Modifying nameservers: ' . $domain->getName());
-        $this->getLog()->debug('Ns1: ' . $domain->getNs1());
-        $this->getLog()->debug('Ns2: ' . $domain->getNs2());
-        $this->getLog()->debug('Ns3: ' . $domain->getNs3());
-        $this->getLog()->debug('Ns4: ' . $domain->getNs4());
-		$return = array();
-		try {
-			$s	= $this->connect();
-			$this->login();
-			$from = $to = array();
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
-			$from[] = '/{{ clTRID }}/';
-			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-info-' . $clTRID);
-			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-  <command>
-    <info>
-      <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-        <domain:name>{{ name }}</domain:name>
-      </domain:info>
-    </info>
-    <clTRID>{{ clTRID }}</clTRID>
-  </command>
-</epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
-			$add = $rem = array();
-			$i = 0;
-			foreach($r->ns->hostObj as $ns) {
-				$i++;
-				$ns = (string)$ns;
-				if (!$ns) {
-					continue;
-				}
-
-				$rem["ns{$i}"] = $ns;
-			}
-
-			foreach (range(1, 4) as $i) {
-			  $k = "getNs$i";
-			  $v = $domain->{$k}();
-			  if (!$v) {
-				continue;
-			  }
-
-			  if ($k0 = array_search($v, $rem)) {
-				unset($rem[$k0]);
-			  } else {
-				$add["ns$i"] = $v;
-			  }
-			}
-
-			if (!empty($add) || !empty($rem)) {
-				$from = $to = array();
-				$text = '';
-				foreach($add as $k => $v) {
-					$text.= '<domain:hostObj>' . $v . '</domain:hostObj>' . "\n";
-				}
-
-				$from[] = '/{{ add }}/';
-				$to[] = (empty($text) ? '' : "<domain:add><domain:ns>\n{$text}</domain:ns></domain:add>\n");
-				$text = '';
-				foreach($rem as $k => $v) {
-					$text.= '<domain:hostObj>' . $v . '</domain:hostObj>' . "\n";
-				}
-
-				$from[] = '/{{ rem }}/';
-				$to[] = (empty($text) ? '' : "<domain:rem><domain:ns>\n{$text}</domain:ns></domain:rem>\n");
-				$from[] = '/{{ name }}/';
-				$to[] = htmlspecialchars($domain->getName());
-				$from[] = '/{{ clTRID }}/';
-				$clTRID = str_replace('.', '', round(microtime(1), 3));
-				$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-update-' . $clTRID);
-				$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-	<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-	  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-	  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-	  <command>
-		<update>
-		  <domain:update
-         xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-			<domain:name>{{ name }}</domain:name>
-		{{ add }}
-		{{ rem }}
-		  </domain:update>
-		</update>
-		<clTRID>{{ clTRID }}</clTRID>
-	  </command>
-	</epp>');
-				$r = $this->write($xml, __FUNCTION__);
-			}
+		if (0 == (int)$r->cd[0]->name->attributes()->avail) {
+			throw new exception($r->cd[0]->name . ' ' . $reason);
 		}
 
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
-		}
-
-		if (!empty($s)) {
-			$this->logout();
-		}
-
-		return $return;
-    }
-
-    public function transferDomain(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Transfering domain: ' . $domain->getName());
-        $this->getLog()->debug('Epp code: ' . $domain->getEpp());
-		$return = array();
-		try {
-			$s	= $this->connect();
-			$this->login();
-			$from = $to = array();
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
-			$from[] = '/{{ authInfo_pw }}/';
-			$to[] = htmlspecialchars($domain->getEpp());
-			$from[] = '/{{ clTRID }}/';
-			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-transfer-' . $clTRID);
-			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-  <command>
-	<transfer op="request">
-	  <domain:transfer 
-         xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-		<domain:name>{{ name }}</domain:name>
-		<domain:period unit="y">1</domain:period>
-		<domain:authInfo>
-		  <domain:pw>{{ authInfo_pw }}</domain:pw>
-		</domain:authInfo>
-	  </domain:transfer>
-	</transfer>
-	<clTRID>{{ clTRID }}</clTRID>
-  </command>
-</epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->trnData;
-		}
-
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
-		}
-
-		if (!empty($s)) {
-			$this->logout();
-		}
-
-		return $return;
-    }
-
-    public function getDomainDetails(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Getting whois: ' . $domain->getName());
-
-        if(!$domain->getRegistrationTime()) {
-            $domain->setRegistrationTime(time());
-        }
-        if(!$domain->getExpirationTime()) {
-            $years = $domain->getRegistrationPeriod();
-            $domain->setExpirationTime(strtotime("+$years year"));
-        }
-        return $domain;
-    }
-
-    public function deleteDomain(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Removing domain: ' . $domain->getName());
-		$return = array();
-		try {
-			$s	= $this->connect();
-			$this->login();
-			$from = $to = array();
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
-			$from[] = '/{{ clTRID }}/';
-			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-delete-' . $clTRID);
-			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-  <command>
-	<delete>
-	  <domain:delete xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-		<domain:name>{{ name }}</domain:name>
-	  </domain:delete>
-	</delete>
-	<clTRID>{{ clTRID }}</clTRID>
-  </command>
-</epp>');
-			$r = $this->write($xml, __FUNCTION__);
-		}
-
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
-		}
-
-		if (!empty($s)) {
-			$this->logout();
-		}
-
-		return $return;
-    }
-
-    public function registerDomain(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Registering domain: ' . $domain->getName(). ' for '.$domain->getRegistrationPeriod(). ' years');
-		$client = $domain->getContactRegistrar();
-
-		$return = array();
-		try {
-			$s = $this->connect();
-			$this->login();
-			$from = $to = array();
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
-			$from[] = '/{{ clTRID }}/';
-			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-check-' . $clTRID);
-			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-  <command>
-    <check>
-      <domain:check
-        xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-        <domain:name>{{ name }}</domain:name>
-      </domain:check>
-    </check>
-    <clTRID>{{ clTRID }}</clTRID>
-  </command>
-</epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->chkData;
-			$reason = (string)$r->cd[0]->reason;
-			if (!$reason) {
-				$reason = 'Domain is not available';
-			}
-
-			if (0 == (int)$r->cd[0]->name->attributes()->avail) {
-				throw new exception($r->cd[0]->name . ' ' . $reason);
-			}
-			
-			// contact:create
+		$contacts = array();
+		foreach(array(
+			'registrant',
+			'admin',
+			'tech',
+			'billing'
+		) as $i => $contactType) {
 			$from = $to = array();
 			$from[] = '/{{ id }}/';
-			$c_id = strtoupper($this->generateRandomString());
-			$to[] = $c_id;
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($client->getFirstName() . ' ' . $client->getLastName());
-			$from[] = '/{{ org }}/';
-			$to[] = htmlspecialchars($client->getCompany());
-			$from[] = '/{{ street1 }}/';
-			$to[] = htmlspecialchars($client->getAddress1());
-			$from[] = '/{{ city }}/';
-			$to[] = htmlspecialchars($client->getCity());
-			$from[] = '/{{ state }}/';
-			$to[] = htmlspecialchars($client->getState());
-			$from[] = '/{{ postcode }}/';
-			$to[] = htmlspecialchars($client->getZip());
-			$from[] = '/{{ country }}/';
-			$to[] = htmlspecialchars($client->getCountry());
-			$from[] = '/{{ phonenumber }}/';
-			$to[] = htmlspecialchars('+'.$client->getTelCc().'.'.$client->getTel());
-			$from[] = '/{{ email }}/';
-			$to[] = htmlspecialchars($client->getEmail());
-			$from[] = '/{{ authInfo }}/';
-			$to[] = htmlspecialchars($this->generateObjectPW());
+			$id = strtoupper($params['registrarprefix'] . '-' . $contactType . '' . $params['domainid']);
+			$to[] = htmlspecialchars($id);
 			$from[] = '/{{ clTRID }}/';
 			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-contact-create-' . $clTRID);
+			$to[] = htmlspecialchars($params['registrarprefix'] . '-contact-check-' . $clTRID); // vezi la create tot acest id sa fie
 			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<check>
+	  <contact:check
+        xmlns:contact="http://hostmaster.ua/epp/contact-1.1">
+		<contact:id>{{ id }}</contact:id>
+	  </contact:check>
+	</check>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+			$r = $s->write($xml, __FUNCTION__);
+			$r = $r->response->resData->children('http://hostmaster.ua/epp/contact-1.1')->chkData;
+
+			//		$reason = (string)$r->cd[0]->reason;
+			//		if (!$reason) {
+			//			$reason = 'Contact is not available';
+			//		}
+
+			if (1 == (int)$r->cd[0]->id->attributes()->avail) {
+
+				// contact:create
+				$from = $to = array();
+				$from[] = '/{{ id }}/';
+				$to[] = strtoupper($s->generateRandomString());
+				$from[] = '/{{ name }}/';
+				$to[] = htmlspecialchars($params['firstname'] . ' ' . $params['lastname']);
+				$from[] = '/{{ org }}/';
+				$to[] = htmlspecialchars($params['companyname']);
+				$from[] = '/{{ street1 }}/';
+				$to[] = htmlspecialchars($params['address1']);
+				$from[] = '/{{ street2 }}/';
+				$to[] = htmlspecialchars($params['address2']);
+				$from[] = '/{{ street3 }}/';
+				$street3 = (isset($params['address3']) ? $params['address3'] : '');
+				$to[] = htmlspecialchars($street3);
+				$from[] = '/{{ city }}/';
+				$to[] = htmlspecialchars($params['city']);
+				$from[] = '/{{ state }}/';
+				$to[] = htmlspecialchars($params['state']);
+				$from[] = '/{{ postcode }}/';
+				$to[] = htmlspecialchars($params['postcode']);
+				$from[] = '/{{ country }}/';
+				$to[] = htmlspecialchars($params['country']);
+				$from[] = '/{{ phonenumber }}/';
+				$to[] = htmlspecialchars($params['fullphonenumber']);
+				$from[] = '/{{ email }}/';
+				$to[] = htmlspecialchars($params['email']);
+				$from[] = '/{{ authInfo }}/';
+				$to[] = htmlspecialchars($s->generateObjectPW());
+				$from[] = '/{{ clTRID }}/';
+				$clTRID = str_replace('.', '', round(microtime(1), 3));
+				$to[] = htmlspecialchars($params['registrarprefix'] . '-contact-create-' . $clTRID);
+				$from[] = "/<\w+:\w+>\s*<\/\w+:\w+>\s+/ims";
+				$to[] = '';
+				$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
@@ -440,20 +269,34 @@ class Registrar_Adapter_UA extends Registrar_AdapterAbstract
 	<clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/contact-1.1')->creData;
-			$contacts = $r->id;
+				$r = $s->write($xml, __FUNCTION__);
+				$r = $r->response->resData->children('http://hostmaster.ua/epp/contact-1.1')->creData;
+				$contacts[$i + 1] = $r->id;
+			}
+			else {
+				$id = strtoupper($params['registrarprefix'] . '-' . $contactType . '' . $params['domainid']);
+				$contacts[$i + 1] = htmlspecialchars($id);
+			}
+		}
 
-			//host create
-			foreach (['ns1', 'ns2', 'ns3', 'ns4'] as $ns) {
-				if ($domain->{'get' . ucfirst($ns)}()) {
-					$from = $to = array();
-					$from[] = '/{{ name }}/';
-					$to[] = $domain->{'get' . ucfirst($ns)}();
-					$from[] = '/{{ clTRID }}/';
-					$clTRID = str_replace('.', '', round(microtime(1), 3));
-					$to[] = htmlspecialchars($this->config['registrarprefix'] . '-host-check-' . $clTRID);
-					$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+        foreach(array(
+            'ns1',
+            'ns2',
+            'ns3',
+            'ns4',
+            'ns5'
+        ) as $ns) {
+            if (empty($params["{$ns}"])) {
+                continue;
+            }
+
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params["{$ns}"]);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-host-check-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
@@ -467,20 +310,20 @@ class Registrar_Adapter_UA extends Registrar_AdapterAbstract
 	<clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-					$r = $this->write($xml, __FUNCTION__);
-					$r = $r->response->resData->children('http://hostmaster.ua/epp/host-1.1')->chkData;
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/host-1.1')->chkData;
 
-					if (0 == (int)$r->cd[0]->name->attributes()->avail) {
-						continue;
-					}
+		if (0 == (int)$r->cd[0]->name->attributes()->avail) {
+			continue;
+		}
 
-					$from = $to = array();
-					$from[] = '/{{ name }}/';
-					$to[] = $domain->{'get' . ucfirst($ns)}();
-					$from[] = '/{{ clTRID }}/';
-					$clTRID = str_replace('.', '', round(microtime(1), 3));
-					$to[] = htmlspecialchars($this->config['registrarprefix'] . '-host-create-' . $clTRID);
-					$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params["{$ns}"]);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-host-create-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
@@ -493,59 +336,40 @@ class Registrar_Adapter_UA extends Registrar_AdapterAbstract
 	<clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-					$r = $this->write($xml, __FUNCTION__);
-				}
-			}
+		$r = $s->write($xml, __FUNCTION__);
+}
 
-			$from = $to = array();
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
-			$from[] = '/{{ period }}/';
-			$to[] = htmlspecialchars($domain->getRegistrationPeriod());
-			if($domain->getNs1()) {
-			$from[] = '/{{ ns1 }}/';
-			$to[] = htmlspecialchars($domain->getNs1());
-			} else {
-			$from[] = '/{{ ns1 }}/';
-			$to[] = '';
-			}
-			if($domain->getNs2()) {
-			$from[] = '/{{ ns2 }}/';
-			$to[] = htmlspecialchars($domain->getNs2());
-			} else {
-			$from[] = '/{{ ns2 }}/';
-			$to[] = '';
-			}
-			if($domain->getNs3()) {
-			$from[] = '/{{ ns3 }}/';
-			$to[] = htmlspecialchars($domain->getNs3());
-			} else {
-			$from[] = '/{{ ns3 }}/';
-			$to[] = '';
-			}
-			if($domain->getNs4()) {
-			$from[] = '/{{ ns4 }}/';
-			$to[] = htmlspecialchars($domain->getNs4());
-			} else {
-			$from[] = '/{{ ns4 }}/';
-			$to[] = '';
-			}
-			$from[] = '/{{ cID_1 }}/';
-			$to[] = htmlspecialchars($contacts);
-			$from[] = '/{{ cID_2 }}/';
-			$to[] = htmlspecialchars($contacts);
-			$from[] = '/{{ cID_3 }}/';
-			$to[] = htmlspecialchars($contacts);
-			$from[] = '/{{ cID_4 }}/';
-			$to[] = htmlspecialchars($contacts);
-			$from[] = '/{{ authInfo }}/';
-			$to[] = htmlspecialchars($this->generateObjectPW());
-			$from[] = '/{{ clTRID }}/';
-			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-create-' . $clTRID);
-			$from[] = "/<\w+:\w+>\s*<\/\w+:\w+>\s+/ims";
-			$to[] = '';
-			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ period }}/';
+		$to[] = htmlspecialchars($params['regperiod']);
+		$from[] = '/{{ ns1 }}/';
+		$to[] = htmlspecialchars($params['ns1']);
+		$from[] = '/{{ ns2 }}/';
+		$to[] = htmlspecialchars($params['ns2']);
+		$from[] = '/{{ ns3 }}/';
+		$to[] = htmlspecialchars($params['ns3']);
+		$from[] = '/{{ ns4 }}/';
+		$to[] = htmlspecialchars($params['ns4']);
+		$from[] = '/{{ ns5 }}/';
+		$to[] = htmlspecialchars($params['ns5']);		
+		$from[] = '/{{ cID_1 }}/';
+		$to[] = htmlspecialchars($contacts[1]);
+		$from[] = '/{{ cID_2 }}/';
+		$to[] = htmlspecialchars($contacts[2]);
+		$from[] = '/{{ cID_3 }}/';
+		$to[] = htmlspecialchars($contacts[3]);
+		$from[] = '/{{ cID_4 }}/';
+		$to[] = htmlspecialchars($contacts[4]);
+		$from[] = '/{{ authInfo }}/';
+		$to[] = htmlspecialchars($s->generateObjectPW());
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-create-' . $clTRID);
+		$from[] = "/<\w+:\w+>\s*<\/\w+:\w+>\s+/ims";
+		$to[] = '';
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
@@ -555,12 +379,13 @@ class Registrar_Adapter_UA extends Registrar_AdapterAbstract
         <domain:name>{{ name }}</domain:name>
         <domain:period unit="y">{{ period }}</domain:period>
         <domain:ns>
-		<domain:hostObj>{{ ns1 }}</domain:hostObj>
-		<domain:hostObj>{{ ns2 }}</domain:hostObj>
-		<domain:hostObj>{{ ns3 }}</domain:hostObj>
-		<domain:hostObj>{{ ns4 }}</domain:hostObj>
+		  <domain:hostObj>{{ ns1 }}</domain:hostObj>
+		  <domain:hostObj>{{ ns2 }}</domain:hostObj>
+		  <domain:hostObj>{{ ns3 }}</domain:hostObj>
+		  <domain:hostObj>{{ ns4 }}</domain:hostObj>
+		  <domain:hostObj>{{ ns5 }}</domain:hostObj>
         </domain:ns>
-        <domain:registrant>{{ cID_1 }}</domain:registrant>
+		<domain:registrant>{{ cID_1 }}</domain:registrant>
 		<domain:contact type="admin">{{ cID_2 }}</domain:contact>
 		<domain:contact type="tech">{{ cID_3 }}</domain:contact>
 		<domain:contact type="billing">{{ cID_4 }}</domain:contact>
@@ -572,62 +397,62 @@ class Registrar_Adapter_UA extends Registrar_AdapterAbstract
     <clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-			$r = $this->write($xml, __FUNCTION__);
-		}
+		$r = $s->write($xml, __FUNCTION__);
+	}
 
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
-		}
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
 
-		if (!empty($s)) {
-			$this->logout();
-		}
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
 
-		return $return;
-    }
+	return $return;
+}
 
-    public function renewDomain(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Renewing domain: ' . $domain->getName());
-		$return = array();
-		try {
-			$s	= $this->connect();
-			$this->login();
-			$from = $to = array();
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
-			$from[] = '/{{ clTRID }}/';
-			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-info-' . $clTRID);
-			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+function ua_RenewDomain($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
   <command>
-    <info>
-      <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-        <domain:name>{{ name }}</domain:name>
-        {{ authInfo }}
-      </domain:info>
-    </info>
-    <clTRID>{{ clTRID }}</clTRID>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
-			$expDate = (string)$r->exDate;
-			$expDate = preg_replace("/^(\d+\-\d+\-\d+)\D.*$/", "$1", $expDate);
-			$from = $to = array();
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
-			$from[] = '/{{ expDate }}/';
-			$to[] = htmlspecialchars($expDate);
-			$from[] = '/{{ clTRID }}/';
-			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-renew-' . $clTRID);
-			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$expDate = (string)$r->exDate;
+		$expDate = preg_replace("/^(\d+\-\d+\-\d+)\D.*$/", "$1", $expDate);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ regperiod }}/';
+		$to[] = htmlspecialchars($params['regperiod']);
+		$from[] = '/{{ expDate }}/';
+		$to[] = htmlspecialchars($expDate);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-renew-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
@@ -636,84 +461,627 @@ class Registrar_Adapter_UA extends Registrar_AdapterAbstract
 	  <domain:renew xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
 		<domain:name>{{ name }}</domain:name>
 		<domain:curExpDate>{{ expDate }}</domain:curExpDate>
-		<domain:period unit="y">1</domain:period>
+		<domain:period unit="y">{{ regperiod }}</domain:period>
 	  </domain:renew>
 	</renew>
 	<clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-			$r = $this->write($xml, __FUNCTION__);
+		$r = $s->write($xml, __FUNCTION__);
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_TransferDomain($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ years }}/';
+		$to[] = htmlspecialchars($params['regperiod']);
+		$from[] = '/{{ authInfo_pw }}/';
+		$to[] = htmlspecialchars($params['transfersecret']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-transfer-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<transfer op="request">
+	  <domain:transfer 
+         xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+		<domain:period unit="y">{{ years }}</domain:period>
+		<domain:authInfo>
+		  <domain:pw>{{ authInfo_pw }}</domain:pw>
+		</domain:authInfo>
+	  </domain:transfer>
+	</transfer>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->trnData;
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_GetNameservers($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$i = 0;
+		foreach($r->ns->hostObj as $ns) {
+			$i++;
+			$return["ns{$i}"] = (string)$ns;
 		}
 
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
+		$status = array();
+		Capsule::table('ua_domain_status')->where('domain_id', '=', $params['domainid'])->delete();
+		foreach($r->status as $e) {
+			$st = (string)$e->attributes()->s;
+			if ($st == 'pendingDelete') {
+				$updatedDomainStatus = Capsule::table('tbldomains')->where('id', $params['domainid'])->update(['status' => 'Cancelled']);
+			}
+
+			Capsule::table('ua_domain_status')->insert(['domain_id' => $params['domainid'], 'status' => $st]);
+		}
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_SaveNameservers($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$add = $rem = array();
+		$i = 0;
+		foreach($r->ns->hostObj as $ns) {
+			$i++;
+			$ns = (string)$ns;
+			if (!$ns) {
+				continue;
+			}
+
+			$rem["ns{$i}"] = $ns;
 		}
 
-		if (!empty($s)) {
-			$this->logout();
+		foreach($params as $k => $v) {
+			if (!$v) {
+				continue;
+			}
+
+			if (!preg_match("/^ns\d$/i", $k)) {
+				continue;
+			}
+
+			if ($k0 = array_search($v, $rem)) {
+				unset($rem[$k0]);
+			}
+			else {
+				$add[$k] = $v;
+			}
 		}
 
-		return $return;
-    }
-
-    public function modifyContact(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Updating contact info: ' . $domain->getName());
-		$client = $domain->getContactRegistrar();
-		$return = array();
-		try {
-			$s	= $this->connect();
-			$this->login();
+		if (!empty($add) || !empty($rem)) {
 			$from = $to = array();
+			$text = '';
+			foreach($add as $k => $v) {
+				$text.= '<domain:hostObj>' . $v . '</domain:hostObj>' . "\n";
+			}
+
+			$from[] = '/{{ add }}/';
+			$to[] = (empty($text) ? '' : "<domain:add><domain:ns>\n{$text}</domain:ns></domain:add>\n");
+			$text = '';
+			foreach($rem as $k => $v) {
+				$text.= '<domain:hostObj>' . $v . '</domain:hostObj>' . "\n";
+			}
+
+			$from[] = '/{{ rem }}/';
+			$to[] = (empty($text) ? '' : "<domain:rem><domain:ns>\n{$text}</domain:ns></domain:rem>\n");
 			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
+			$to[] = htmlspecialchars($params['domainname']);
 			$from[] = '/{{ clTRID }}/';
 			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-info-' . $clTRID);
+			$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-update-' . $clTRID);
+			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+	<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+	  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+	  <command>
+		<update>
+		  <domain:update
+         xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+			<domain:name>{{ name }}</domain:name>
+		{{ add }}
+		{{ rem }}
+		  </domain:update>
+		</update>
+		<clTRID>{{ clTRID }}</clTRID>
+	  </command>
+	</epp>');
+			$r = $s->write($xml, __FUNCTION__);
+		}
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_GetRegistrarLock($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = 'unlocked';
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		foreach($r->status as $e) {
+			$attr = $e->attributes();
+			if (preg_match("/clientTransferProhibited/i", $attr['s'])) {
+				$return = 'locked';
+			}
+		}
+	}
+
+	catch(exception $e) {
+		$return = 'locked';
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_SaveRegistrarLock($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$status = array();
+		foreach($r->status as $e) {
+			$st = (string)$e->attributes()->s;
+			if (!preg_match("/^client.+Prohibited$/i", $st)) {
+				continue;
+			}
+
+			$status[$st] = true;
+		}
+
+		$rem = $add = array();
+		foreach(array(
+			'clientUpdateProhibited',
+			'clientDeleteProhibited',
+			'clientTransferProhibited'
+		) as $st) {
+			if ($params["lockenabled"] == 'locked') {
+				if (!isset($status[$st])) {
+					$add[] = $st;
+				}
+			}
+			else {
+				if (isset($status[$st])) {
+					$rem[] = $st;
+				}
+			}
+		}
+
+		if (!empty($add) || !empty($rem)) {
+			$text = '';
+			foreach($add as $st) {
+				$text.= '<domain:status s="' . $st . '" lang="en"></domain:status>' . "\n";
+			}
+
+			$from[] = '/{{ add }}/';
+			$to[] = (empty($text) ? '' : "<domain:add>\n{$text}</domain:add>\n");
+			$text = '';
+			foreach($rem as $st) {
+				$text.= '<domain:status s="' . $st . '" lang="en"></domain:status>' . "\n";
+			}
+
+			$from[] = '/{{ rem }}/';
+			$to[] = (empty($text) ? '' : "<domain:rem>\n{$text}</domain:rem>\n");
+			$from[] = '/{{ name }}/';
+			$to[] = htmlspecialchars($params['domainname']);
+			$from[] = '/{{ clTRID }}/';
+			$clTRID = str_replace('.', '', round(microtime(1), 3));
+			$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-update-' . $clTRID);
+			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+	<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+	  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+	  <command>
+		<update>
+		  <domain:update
+         xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+			<domain:name>{{ name }}</domain:name>
+		{{ add }}
+		{{ rem }}
+		  </domain:update>
+		</update>
+		<clTRID>{{ clTRID }}</clTRID>
+	  </command>
+	</epp>');
+			$r = $s->write($xml, __FUNCTION__);
+		}
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_GetContactDetails($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$dcontact = array();
+		$dcontact['registrant'] = (string)$r->registrant;
+		foreach($r->contact as $e) {
+			$type = (string)$e->attributes()->type;
+			$dcontact[$type] = (string)$e;
+		}
+
+		$contact = array();
+		foreach($dcontact as $id) {
+			if (isset($contact[$id])) {
+				continue;
+			}
+
+			$from = $to = array();
+			$from[] = '/{{ id }}/';
+			$to[] = htmlspecialchars($id);
+			$from[] = '/{{ clTRID }}/';
+			$clTRID = str_replace('.', '', round(microtime(1), 3));
+			$to[] = htmlspecialchars($params['registrarprefix'] . '-contact-info-' . $clTRID);
 			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
   <command>
-    <info>
-      <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-        <domain:name>{{ name }}</domain:name>
-      </domain:info>
-    </info>
-    <clTRID>{{ clTRID }}</clTRID>
+	<info>
+	  <contact:info
+	   xmlns:contact="http://hostmaster.ua/epp/contact-1.1">
+		<contact:id>{{ id }}</contact:id>
+	  </contact:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
-			$registrant = (string)$r->registrant;
+			$r = $s->write($xml, __FUNCTION__);
+			$r = $r->response->resData->children('http://hostmaster.ua/epp/contact-1.1')->infData[0];
+			$contact[$id] = array();
+			$c = & $contact[$id];
+			foreach($r->postalInfo as $e) {
+				$c["Name"] = (string)$e->name;
+				$c["Organization"] = (string)$e->org;
+				for ($i = 0; $i <= 2; $i++) {
+					$c["Street " . ($i + 1) ] = (string)$e->addr->street[$i];
+				}
+
+				if (empty($c["Street 3"])) {
+					unset($c["street3"]);
+				}
+
+				$c["City"] = (string)$e->addr->city;
+				$c["State or Province"] = (string)$e->addr->sp;
+				$c["Postal Code"] = (string)$e->addr->pc;
+				$c["Country Code"] = (string)$e->addr->cc;
+				break;
+			}
+
+			$c["Phone"] = (string)$r->voice;
+			$c["Fax"] = (string)$r->fax;
+			$c["Email"] = (string)$r->email;
+		}
+
+		foreach($dcontact as $type => $id) {
+			if ($type == 'registrant') {
+				$type = 'Registrant';
+			}
+			elseif ($type == 'admin') {
+				$type = 'Administrator';
+			}
+			elseif ($type == 'tech') {
+				$type = 'Technical';
+			}
+			elseif ($type == 'billing') {
+				$type = 'Billing';
+			}
+			else {
+				continue;
+			}
+
+			$return[$type] = $contact[$id];
+		}
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_SaveContactDetails($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$dcontact = array();
+		$dcontact['registrant'] = (string)$r->registrant;
+		foreach($r->contact as $e) {
+			$type = (string)$e->attributes()->type;
+			$dcontact[$type] = (string)$e;
+		}
+
+		foreach($dcontact as $type => $id) {
+			$a = array();
+			if ($type == 'registrant') {
+				$a = $params['contactdetails']['Registrant'];
+			}
+			elseif ($type == 'admin') {
+				$a = $params['contactdetails']['Administrator'];
+			}
+			elseif ($type == 'tech') {
+				$a = $params['contactdetails']['Technical'];
+			}
+			elseif ($type == 'billing') {
+				$a = $params['contactdetails']['Billing'];
+			}
+
+			if (empty($a)) {
+				continue;
+			}
+
 			$from = $to = array();
+
 			$from[] = '/{{ id }}/';
-			$to[] = $registrant;
+			$to[] = htmlspecialchars($id);
+
 			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($client->getFirstName() . ' ' . $client->getLastName());
+			$name = ($a['Name'] ? $a['Name'] : $a['Full Name']);
+			$to[] = htmlspecialchars($name);
+
 			$from[] = '/{{ org }}/';
-			$to[] = htmlspecialchars($client->getCompany());
+			$org = ($a['Organization'] ? $a['Organization'] : $a['Organisation Name']);
+			$to[] = htmlspecialchars($org);
+
 			$from[] = '/{{ street1 }}/';
-			$to[] = htmlspecialchars($client->getAddress1());
+			$street1 = ($a['Street 1'] ? $a['Street 1'] : $a['Address 1']);
+			$to[] = htmlspecialchars($street1);
+
 			$from[] = '/{{ street2 }}/';
-			$to[] = htmlspecialchars($client->getAddress2());
+			$street2 = ($a['Street 2'] ? $a['Street 2'] : $a['Address 2']);
+			$to[] = htmlspecialchars($street2);
+
+			$from[] = '/{{ street3 }}/';
+			$street3 = ($a['Street 3'] ? $a['Street 3'] : $a['Address 3']);
+			$to[] = htmlspecialchars($street3);
+
 			$from[] = '/{{ city }}/';
-			$to[] = htmlspecialchars($client->getCity());
-			$from[] = '/{{ state }}/';
-			$to[] = htmlspecialchars($client->getState());
-			$from[] = '/{{ postcode }}/';
-			$to[] = htmlspecialchars($client->getZip());
-			$from[] = '/{{ country }}/';
-			$to[] = htmlspecialchars($client->getCountry());
-			$from[] = '/{{ phonenumber }}/';
-			$to[] = htmlspecialchars('+'.$client->getTelCc().'.'.$client->getTel());
+			$to[] = htmlspecialchars($a['City']);
+
+			$from[] = '/{{ sp }}/';
+			$sp = ($a['State or Province'] ? $a['State or Province'] : $a['State']);
+			$to[] = htmlspecialchars($sp);
+
+			$from[] = '/{{ pc }}/';
+			$pc = ($a['Postal Code'] ? $a['Postal Code'] : $a['Postcode']);
+			$to[] = htmlspecialchars($pc);
+
+			$from[] = '/{{ cc }}/';
+			$cc = ($a['Country Code'] ? $a['Country Code'] : $a['Country']);
+			$to[] = htmlspecialchars($cc);
+
+			$from[] = '/{{ voice }}/';
+			$to[] = htmlspecialchars($a['Phone']);
+
+			$from[] = '/{{ fax }}/';
+			$to[] = htmlspecialchars($a['Fax']);
+
 			$from[] = '/{{ email }}/';
-			$to[] = htmlspecialchars($client->getEmail());
+			$to[] = htmlspecialchars($a['Email']);
+
 			$from[] = '/{{ clTRID }}/';
 			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-contact-update-' . $clTRID);
+			$to[] = htmlspecialchars($params['registrarprefix'] . '-contact-chg-' . $clTRID);
 			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -729,15 +1097,15 @@ class Registrar_Adapter_UA extends Registrar_AdapterAbstract
 			<contact:addr>
 			  <contact:street>{{ street1 }}</contact:street>
 			  <contact:street>{{ street2 }}</contact:street>
-			  <contact:street></contact:street>
+			  <contact:street>{{ street3 }}</contact:street>
 			  <contact:city>{{ city }}</contact:city>
-			  <contact:sp>{{ state }}</contact:sp>
-			  <contact:pc>{{ postcode }}</contact:pc>
-			  <contact:cc>{{ country }}</contact:cc>
+			  <contact:sp>{{ sp }}</contact:sp>
+			  <contact:pc>{{ pc }}</contact:pc>
+			  <contact:cc>{{ cc }}</contact:cc>
 			</contact:addr>
 		  </contact:postalInfo>
-		  <contact:voice>{{ phonenumber }}</contact:voice>
-		  <contact:fax></contact:fax>
+		  <contact:voice>{{ voice }}</contact:voice>
+		  <contact:fax>{{ fax }}</contact:fax>
 		  <contact:email>{{ email }}</contact:email>
 		</contact:chg>
 	  </contact:update>
@@ -745,232 +1113,146 @@ class Registrar_Adapter_UA extends Registrar_AdapterAbstract
 	<clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-			$r = $this->write($xml, __FUNCTION__);
+			$r = $s->write($xml, __FUNCTION__);
 		}
+	}
 
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
-		}
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
 
-		if (!empty($s)) {
-			$this->logout();
-		}
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
 
-		return $return;
-    }
-    
-    public function enablePrivacyProtection(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Enabling Privacy protection: ' . $domain->getName());
-		$return = array();
-		try {
-			$s	= $this->connect();
-			$this->login();
-			$from = $to = array();
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
-			$from[] = '/{{ clTRID }}/';
-			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-info-' . $clTRID);
-			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-  <command>
-    <info>
-      <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-        <domain:name>{{ name }}</domain:name>
-      </domain:info>
-    </info>
-    <clTRID>{{ clTRID }}</clTRID>
-  </command>
-</epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
-			$dcontact = array();
-			$dcontact['registrant'] = (string)$r->registrant;
-			foreach($r->contact as $e) {
-				$type = (string)$e->attributes()->type;
-				$dcontact[$type] = (string)$e;
-			}
+	return $return;
+}
 
-			$contact = array();
-			foreach($dcontact as $id) {
-				if (isset($contact[$id])) {
-					continue;
-				}
-				$from = $to = array();
-				$from[] = '/{{ id }}/';
-				$to[] = htmlspecialchars($id);
-				$from[] = '/{{ flag }}/';
-				$to[] = 1;
-				$from[] = '/{{ clTRID }}/';
-				$clTRID = str_replace('.', '', round(microtime(1) , 3));
-				$to[] = htmlspecialchars($this->config['registrarprefix'] . '-contact-update-' . $clTRID);
-				$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-	<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-		 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-		 xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-	  <command>
-		<update>
-		  <contact:update xmlns:contact="http://hostmaster.ua/epp/contact-1.1">
-			<contact:id>{{ id }}</contact:id>
-			<contact:chg>
-			  <contact:disclose flag="{{ flag }}">
-				<contact:name type="int"/>
-				<contact:addr type="int"/>
-				<contact:org type="int"/>
-				<contact:voice/>
-				<contact:fax/>
-				<contact:email/>
-			  </contact:disclose>
-			</contact:chg>
-		  </contact:update>
-		</update>
-		<clTRID>{{ clTRID }}</clTRID>
-	  </command>
-	</epp>');
-				$r = $this->write($xml, __FUNCTION__);
-			}
-		}
-
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
-		}
-
-		if (!empty($s)) {
-			$this->logout();
-		}
-
-		return $return;
-    }
-    
-    public function disablePrivacyProtection(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Disabling Privacy protection: ' . $domain->getName());
-		$return = array();
-		try {
-			$s	= $this->connect();
-			$this->login();
-			$from = $to = array();
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
-			$from[] = '/{{ clTRID }}/';
-			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-info-' . $clTRID);
-			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-  <command>
-    <info>
-      <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-        <domain:name>{{ name }}</domain:name>
-      </domain:info>
-    </info>
-    <clTRID>{{ clTRID }}</clTRID>
-  </command>
-</epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
-			$dcontact = array();
-			$dcontact['registrant'] = (string)$r->registrant;
-			foreach($r->contact as $e) {
-				$type = (string)$e->attributes()->type;
-				$dcontact[$type] = (string)$e;
-			}
-
-			$contact = array();
-			foreach($dcontact as $id) {
-				if (isset($contact[$id])) {
-					continue;
-				}
-				$from = $to = array();
-				$from[] = '/{{ id }}/';
-				$to[] = htmlspecialchars($id);
-				$from[] = '/{{ flag }}/';
-				$to[] = 0;
-				$from[] = '/{{ clTRID }}/';
-				$clTRID = str_replace('.', '', round(microtime(1) , 3));
-				$to[] = htmlspecialchars($this->config['registrarprefix'] . '-contact-update-' . $clTRID);
-				$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-	<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-		 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-		 xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-	  <command>
-		<update>
-		  <contact:update xmlns:contact="http://hostmaster.ua/epp/contact-1.1">
-			<contact:id>{{ id }}</contact:id>
-			<contact:chg>
-			  <contact:disclose flag="{{ flag }}">
-				<contact:name type="int"/>
-				<contact:addr type="int"/>
-				<contact:org type="int"/>
-				<contact:voice/>
-				<contact:fax/>
-				<contact:email/>
-			  </contact:disclose>
-			</contact:chg>
-		  </contact:update>
-		</update>
-		<clTRID>{{ clTRID }}</clTRID>
-	  </command>
-	</epp>');
-				$r = $this->write($xml, __FUNCTION__);
-			}
-		}
-
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
-		}
-
-		if (!empty($s)) {
-			$this->logout();
-		}
-
-		return $return;
-    }
-
-    public function getEpp(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Retrieving domain transfer code: ' . $domain->getName());
-		$return = array();
-		try {
-			$s	= $this->connect();
-			$this->login();
-			$from = $to = array();
-			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
-			$from[] = '/{{ clTRID }}/';
-			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-info-' . $clTRID);
-			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-  <command>
-    <info>
-      <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-        <domain:name>{{ name }}</domain:name>
-      </domain:info>
-    </info>
-    <clTRID>{{ clTRID }}</clTRID>
-  </command>
-</epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
-			$eppcode = (string)$r->authInfo->pw;
-			
-if (empty($eppcode)) {
-		$eppcode = $this->generateObjectPW();
+function ua_IDProtectToggle($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
 		$from[] = '/{{ name }}/';
-		$to[] = htmlspecialchars($domain->getName());
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$dcontact = array();
+		$dcontact['registrant'] = (string)$r->registrant;
+		foreach($r->contact as $e) {
+			$type = (string)$e->attributes()->type;
+			$dcontact[$type] = (string)$e;
+		}
+
+		$contact = array();
+		foreach($dcontact as $id) {
+			if (isset($contact[$id])) {
+				continue;
+			}
+
+			$from = $to = array();
+			$from[] = '/{{ id }}/';
+			$to[] = htmlspecialchars($id);
+
+			$from[] = '/{{ flag }}/';
+			$to[] = ($params['protectenable'] ? 1 : 0);
+
+			$from[] = '/{{ clTRID }}/';
+			$clTRID = str_replace('.', '', round(microtime(1) , 3));
+			$to[] = htmlspecialchars($params['RegistrarPrefix'] . '-contact-update-' . $clTRID);
+
+			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+	 xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	 xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<update>
+	  <contact:update xmlns:contact="http://hostmaster.ua/epp/contact-1.1">
+		<contact:id>{{ id }}</contact:id>
+		<contact:chg>
+          <contact:disclose flag="{{ flag }}">
+			<contact:name type="int"/>
+			<contact:addr type="int"/>
+			<contact:voice/>
+			<contact:fax/>
+			<contact:email/>
+          </contact:disclose>
+		</contact:chg>
+	  </contact:update>
+	</update>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+			$r = $s->write($xml, __FUNCTION__);
+		}
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['RegistrarPrefix']);
+	}
+
+	return $return;
+}
+
+function ua_GetEPPCode($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$eppcode = (string)$r->authInfo->pw;
+
+if (empty($eppcode)) {
+		$eppcode = $s->generateObjectPW();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
 		$from[] = '/{{ authInfo }}/';
 		$to[] = $eppcode;
 		$from[] = '/{{ clTRID }}/';
@@ -995,231 +1277,615 @@ if (empty($eppcode)) {
 	<clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-		$r = $this->write($xml, __FUNCTION__);
+		$r = $s->write($xml, __FUNCTION__);
 }
 
-			if (!empty($s)) {
-					$this->logout();
-				}
-			return $eppcode;
-		}
-
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
-		}
-
+		// If EPP Code is returned, return it for display to the end user
 		if (!empty($s)) {
-			$this->logout();
+			$s->logout($params['registrarprefix']);
+		}
+		return array('eppcode' => $eppcode);
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_RegisterNameserver($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['nameserver']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-host-check-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<check>
+	  <host:check
+		xmlns:host="http://hostmaster.ua/epp/host-1.1">
+		<host:name>{{ name }}</host:name>
+	  </host:check>
+	</check>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/host-1.1')->chkData;
+		if (0 == (int)$r->cd[0]->name->attributes()->avail) {
+			throw new exception($r->cd[0]->name . " " . $r->cd[0]->reason);
 		}
 
-		return $return;
-    }
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['nameserver']);
+		$from[] = '/{{ ip }}/';
+		$to[] = htmlspecialchars($params['ipaddress']);
+		$from[] = '/{{ v }}/';
+		$to[] = (preg_match('/:/', $params['ipaddress']) ? 'v6' : 'v4');
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-host-create-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<create>
+	  <host:create xmlns:host="http://hostmaster.ua/epp/host-1.1">
+		<host:name>{{ name }}</host:name>
+		<host:addr ip="{{ v }}">{{ ip }}</host:addr>
+	  </host:create>
+	</create>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+	}
 
-    public function lock(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Locking domain: ' . $domain->getName());
-		$return = array();
-		try {
-			$s	= $this->connect();
-			$this->login();
-			$from = $to = array();
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_ModifyNameserver($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['nameserver']);
+		$from[] = '/{{ ip1 }}/';
+		$to[] = htmlspecialchars($params['currentipaddress']);
+		$from[] = '/{{ v1 }}/';
+		$to[] = (preg_match('/:/', $params['currentipaddress']) ? 'v6' : 'v4');
+		$from[] = '/{{ ip2 }}/';
+		$to[] = htmlspecialchars($params['newipaddress']);
+		$from[] = '/{{ v2 }}/';
+		$to[] = (preg_match('/:/', $params['newipaddress']) ? 'v6' : 'v4');
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-host-update-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<update>
+	  <host:update
+	   xmlns:host="http://hostmaster.ua/epp/host-1.1">
+		<host:name>{{ name }}</host:name>
+		<host:add>
+		  <host:addr ip="{{ v2 }}">{{ ip2 }}</host:addr>
+		</host:add>
+		<host:rem>
+		  <host:addr ip="{{ v1 }}">{{ ip1 }}</host:addr>
+		</host:rem>
+	  </host:update>
+	</update>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_DeleteNameserver($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['nameserver']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-host-delete-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+	<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+	  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+	  <command>
+		<delete>
+		  <host:delete xmlns:host="http://hostmaster.ua/epp/host-1.1">
+			<host:name>{{ name }}</host:name>
+		  </host:delete>
+		</delete>
+		<clTRID>{{ clTRID }}</clTRID>
+	  </command>
+	</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_RequestDelete($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-delete-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<delete>
+	  <domain:delete xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:delete>
+	</delete>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_AdminCustomButtonArray($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$domainid = $params['domainid'];
+
+	// $domain = Capsule::table('tbldomains')->where('id', $domainid)->first();
+
+	$domain = Capsule::table('ua_domain_status')->where('domain_id', '=', $domainid)->where('status', '=', 'clientHold')->first();
+
+	if (isset($domain->status)) {
+		return array(
+			'Unhold Domain' => 'UnHoldDomain'
+		);
+	}
+	else {
+		return array(
+			'Put Domain On Hold' => 'OnHoldDomain'
+		);
+	}
+}
+
+function ua_OnHoldDomain($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$status = array();
+		$existing_status = 'ok';
+		foreach($r->status as $e) {
+			$st = (string)$e->attributes()->s;
+			if ($st == 'clientHold') {
+				$existing_status = 'clientHold';
+				break;
+			}
+
+			if ($st == 'serverHold') {
+				$existing_status = 'serverHold';
+				break;
+			}
+		}
+
+		if ($existing_status == 'ok') {
 			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
+			$to[] = htmlspecialchars($params['domainname']);
 			$from[] = '/{{ clTRID }}/';
 			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-info-' . $clTRID);
+			$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-update-' . $clTRID);
 			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
   <command>
-    <info>
-      <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-        <domain:name>{{ name }}</domain:name>
-      </domain:info>
-    </info>
-    <clTRID>{{ clTRID }}</clTRID>
+	<update>
+	  <domain:update
+         xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+        	<domain:add>
+             	<domain:status s="clientHold" lang="en">clientHold</domain:status>
+           	</domain:add>
+	  </domain:update>
+	</update>
+	<clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
-			$status = array();
-			foreach($r->status as $e) {
-				$st = (string)$e->attributes()->s;
-				if (!preg_match("/^client.+Prohibited$/i", $st)) {
-					continue;
-				}
+			$r = $s->write($xml, __FUNCTION__);
+		}
+	}
 
-				$status[$st] = true;
-			}
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
 
-			$add = array();
-			foreach(array(
-				'clientUpdateProhibited',
-				'clientDeleteProhibited',
-				'clientTransferProhibited'
-			) as $st) {
-				if (!isset($status[$st])) {
-					$add[] = $st;
-				}
-			}
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
 
-			if (!empty($add)) {
-				$text = '';
-				foreach($add as $st) {
-					$text.= '<domain:status s="' . $st . '" lang="en"></domain:status>' . "\n";
-				}
-				$from[] = '/{{ add }}/';
-				$to[] = (empty($text) ? '' : "<domain:add>\n{$text}</domain:add>\n");
-				$from[] = '/{{ name }}/';
-				$to[] = htmlspecialchars($domain->getName());
-				$from[] = '/{{ clTRID }}/';
-				$clTRID = str_replace('.', '', round(microtime(1), 3));
-				$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-update-' . $clTRID);
-				$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-	<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-	  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-	  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-	  <command>
-		<update>
-		  <domain:update
-         xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-			<domain:name>{{ name }}</domain:name>
-			{{ add }}
-		  </domain:update>
-		</update>
-		<clTRID>{{ clTRID }}</clTRID>
-	  </command>
-	</epp>');
-				$r = $this->write($xml, __FUNCTION__);
+	return $return;
+}
+
+function ua_UnHoldDomain($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$status = array();
+		$existing_status = 'ok';
+		foreach($r->status as $e) {
+			$st = (string)$e->attributes()->s;
+			if ($st == 'clientHold') {
+				$existing_status = 'clientHold';
+				break;
 			}
 		}
 
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
-		}
-
-		if (!empty($s)) {
-			$this->logout();
-		}
-
-		return $return;
-    }
-
-    public function unlock(Registrar_Domain $domain)
-    {
-        $this->getLog()->debug('Unlocking: ' . $domain->getName());
-		$return = array();
-		try {
-			$s	= $this->connect();
-			$this->login();
-			$from = $to = array();
+		if ($existing_status == 'clientHold') {
 			$from[] = '/{{ name }}/';
-			$to[] = htmlspecialchars($domain->getName());
+			$to[] = htmlspecialchars($params['domainname']);
 			$from[] = '/{{ clTRID }}/';
 			$clTRID = str_replace('.', '', round(microtime(1), 3));
-			$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-info-' . $clTRID);
+			$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-update-' . $clTRID);
 			$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
   <command>
-    <info>
-      <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-        <domain:name>{{ name }}</domain:name>
-      </domain:info>
-    </info>
-    <clTRID>{{ clTRID }}</clTRID>
+	<update>
+	  <domain:update
+         xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+        	<domain:rem>
+             	<domain:status s="clientHold" lang="en">clientHold</domain:status>
+           	</domain:rem>
+	  </domain:update>
+	</update>
+	<clTRID>{{ clTRID }}</clTRID>
   </command>
 </epp>');
-			$r = $this->write($xml, __FUNCTION__);
-			$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
-			$status = array();
-			foreach($r->status as $e) {
-				$st = (string)$e->attributes()->s;
-				if (!preg_match("/^client.+Prohibited$/i", $st)) {
-					continue;
-				}
+			$r = $s->write($xml, __FUNCTION__);
+		}
+	}
 
-				$status[$st] = true;
-			}
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
 
-			$rem = array();
-			foreach(array(
-				'clientUpdateProhibited',
-				'clientDeleteProhibited',
-				'clientTransferProhibited'
-			) as $st) {
-				if (isset($status[$st])) {
-					$rem[] = $st;
-				}
-			}
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
 
-			if (!empty($rem)) {
-				$text = '';
-				foreach($rem as $st) {
-					$text.= '<domain:status s="' . $st . '" lang="en"></domain:status>' . "\n";
-				}
-				$from[] = '/{{ rem }}/';
-				$to[] = (empty($text) ? '' : "<domain:rem>\n{$text}</domain:rem>\n");
-				$from[] = '/{{ name }}/';
-				$to[] = htmlspecialchars($domain->getName());
-				$from[] = '/{{ clTRID }}/';
-				$clTRID = str_replace('.', '', round(microtime(1), 3));
-				$to[] = htmlspecialchars($this->config['registrarprefix'] . '-domain-update-' . $clTRID);
-				$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
-	<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
-	  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-	  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
-	  <command>
-		<update>
-		  <domain:update
+	return $return;
+}
+
+function ua_TransferSync($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['sld'] . '.' . $params['tld']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-transfer-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<transfer op="query">
+	  <domain:transfer 
          xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
-			<domain:name>{{ name }}</domain:name>
-			{{ rem }}
-		  </domain:update>
-		</update>
-		<clTRID>{{ clTRID }}</clTRID>
-	  </command>
-	</epp>');
-				$r = $this->write($xml, __FUNCTION__);
-			}
-		}
+		<domain:name>{{ name }}</domain:name>
+	  </domain:transfer>
+	</transfer>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->trnData;
+		$trStatus = (string)$r->trStatus;
+		$expDate = (string)$r->exDate;
+		$updatedDomainTrStatus = Capsule::table('tbldomains')->where('id', $params['domainid'])->update(['trstatus' => $trStatus]);
 
-		catch(exception $e) {
-			$return = array(
-				'error' => $e->getMessage()
-			);
-		}
-
-		if (!empty($s)) {
-			$this->logout();
+		switch ($trStatus) {
+			case 'pending':
+				$return['completed'] = false;
+			break;
+			case 'clientApproved':
+			case 'serverApproved':
+				$return['completed'] = true;
+				$return['expirydate'] = date('Y-m-d', is_numeric($expDate) ? $expDate : strtotime($expDate));
+			break;
+			case 'clientRejected':
+			case 'clientCancelled':
+			case 'serverCancelled':
+				$return['failed'] = true;
+				$return['reason'] = $trStatus;
+			break;
+			default:
+				$return = array(
+					'error' => sprintf('invalid transfer status: %s', $trStatus)
+				);
+			break;
 		}
 
 		return $return;
-    }
+	}
 
-	public function connect()
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+function ua_Sync($params = array())
+{
+	_ua_log(__FUNCTION__, $params);
+	$return = array();
+	try {
+		$s = _ua_startEppClient($params);
+		$from = $to = array();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['sld'] . '.' . $params['tld']);
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-info-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<info>
+	  <domain:info xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+	  </domain:info>
+	</info>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
+		$expDate = (string)$r->exDate;
+        $timestamp = strtotime($expDate);
+
+        if ($timestamp === false) {
+            return array(
+            	'error' => 'Empty expDate date for domain: ' . $params['domain']
+            );
+        }
+
+        $expDate = preg_replace("/^(\d+\-\d+\-\d+)\D.*$/", "$1", $expDate);
+
+        if ($timestamp < time()) {
+            return array(
+                'expirydate'    =>  $expDate,
+                'expired'       =>  true
+            );            
+        }
+        else {
+            return array(
+                'expirydate'    =>  $expDate,
+                'active'        =>  true
+            );
+        }
+	}
+
+	catch(exception $e) {
+		$return = array(
+			'error' => $e->getMessage()
+		);
+	}
+
+	if (!empty($s)) {
+		$s->logout($params['registrarprefix']);
+	}
+
+	return $return;
+}
+
+class ua_epp_client
+
+{
+	var $socket;
+	var $isLogined = false;
+	var $params;
+	function __construct($params)
 	{
-		$host = $this->config['host'];
-		$port = $this->config['port'];
+		$this->params = $params;
+		$verify_peer = false;
+		if ($params['verify_peer'] == 'on') {
+			$verify_peer = true;
+		}
+		$ssl = array(
+			'verify_peer' => $verify_peer,
+			'cafile' => $params['cafile'],
+			'local_cert' => $params['local_cert'],
+			'local_pk' => $params['local_pk'],
+			'passphrase' => $params['passphrase']
+		);
+		$host = $params['host'];
+		$port = $params['port'];
+
+		if ($host) {
+			$this->connect($host, $port, $ssl);
+		}
+	}
+
+	function connect($host, $port = 700, $ssl, $timeout = 30)
+	{
+		ini_set('display_errors', true);
+		error_reporting(E_ALL);
+
+		// echo '<pre>';print_r($host);
+		// print_r($this->params);
+		// exit;
+
+		if ($host != $this->params['host']) {
+			throw new exception("Unknown EPP server '$host'");
+		}
+		
+		$tls_version = '1.2';
+		if ($this->params['tls_version'] == 'on') {
+			$tls_version = '1.3';
+		}
 		
 		$opts = array(
 			'ssl' => array(
-				'verify_peer' => false,
+				'verify_peer' => $ssl['verify_peer'],
 				'verify_peer_name' => false,
 				'verify_host' => false,
-				'allow_self_signed' => true,
-				'local_cert' => 'cert.pem',
-				'local_pk' => 'key.pem'
+				//'cafile' => __DIR__ . '/' . $ssl['cafile'],
+				'local_cert' => __DIR__ . '/' . $ssl['local_cert'],
+				'local_pk' => __DIR__ . '/' . $ssl['local_pk'],
+				//'passphrase' => $ssl['passphrase'],
+				'allow_self_signed' => true
 			)
 		);
 		$context = stream_context_create($opts);
-		$this->socket = stream_socket_client("tlsv1.2://{$host}:{$port}", $errno, $errmsg, $timeout, STREAM_CLIENT_CONNECT, $context);
+		$this->socket = stream_socket_client("tlsv{$tls_version}://{$host}:{$port}", $errno, $errmsg, $timeout, STREAM_CLIENT_CONNECT, $context);
+
 
 		if (!$this->socket) {
 			throw new exception("Cannot connect to server '{$host}': {$errmsg}");
@@ -1228,16 +1894,16 @@ if (empty($eppcode)) {
 		return $this->read();
 	}
 
-	public function login()
+	function login($login, $pwd, $prefix)
 	{
 		$from = $to = array();
 		$from[] = '/{{ clID }}/';
-		$to[] = htmlspecialchars($this->config['username']);
+		$to[] = htmlspecialchars($login);
 		$from[] = '/{{ pw }}/';
-		$to[] = $this->config['password'];
+		$to[] = $pwd;
 		$from[] = '/{{ clTRID }}/';
 		$clTRID = str_replace('.', '', round(microtime(1), 3));
-		$to[] = htmlspecialchars($this->config['registrarprefix'] . '-login-' . $clTRID);
+		$to[] = htmlspecialchars($prefix . '-login-' . $clTRID);
 		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -1271,7 +1937,7 @@ if (empty($eppcode)) {
 		return true;
 	}
 
-	public function logout()
+	function logout($prefix)
 	{
 		if (!$this->isLogined) {
 			return true;
@@ -1280,7 +1946,7 @@ if (empty($eppcode)) {
 		$from = $to = array();
 		$from[] = '/{{ clTRID }}/';
 		$clTRID = str_replace('.', '', round(microtime(1), 3));
-		$to[] = htmlspecialchars($this->config['registrarprefix'] . '-logout-' . $clTRID);
+		$to[] = htmlspecialchars($prefix . '-logout-' . $clTRID);
 		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
 <epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
   xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
@@ -1295,8 +1961,9 @@ if (empty($eppcode)) {
 		return true;
 	}
 
-	public function read()
+	function read()
 	{
+	    _ua_log('================= read-this =================', $this);
 	    $hdr = stream_get_contents($this->socket, 4);
 	    if ($hdr === false) {
 		throw new exception('Connection appears to have closed.');
@@ -1306,23 +1973,27 @@ if (empty($eppcode)) {
 	    }
 	    $unpacked = unpack('N', $hdr);
 	    $xml = fread($this->socket, ($unpacked[1] - 4));
-	    $xml = preg_replace('/></', ">\n<", $xml);      
+	    $xml = preg_replace('/></', ">\n<", $xml); 
+	    _ua_log('================= read =================', $xml);
 	    return $xml;
 	}
 
-	public function write($xml)
+	function write($xml, $action = 'Unknown')
 	{
+	    _ua_log('================= send-this =================', $this);
+	    _ua_log('================= send =================', $xml);
 	    if (fwrite($this->socket, pack('N', (strlen($xml) + 4)) . $xml) === false) {
 		throw new exception('Error writing to the connection.');
 	    }
 	    $r = simplexml_load_string($this->read());
+	    _ua_modulelog($xml, $r, $action);
             if (isset($r->response) && $r->response->result->attributes()->code >= 2000) {
                 throw new exception($r->response->result->msg);
             }
 		return $r;
 	}
 
-	public function disconnect()
+	function disconnect()
 	{
 		$result = fclose($this->socket);
 		if (!$result) {
@@ -1358,7 +2029,7 @@ if (empty($eppcode)) {
 		return 'aA1' . $result;
 	}
 	
-	public function generateRandomString() 
+	function generateRandomString() 
 	{
 		$characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 		$randomString = '';
@@ -1366,5 +2037,108 @@ if (empty($eppcode)) {
 			$randomString .= $characters[rand(0, strlen($characters) - 1)];
 		}
 		return $randomString;
+	}
+
+}
+
+function _ua_modulelog($send, $responsedata, $action)
+{
+	$from = $to = array();
+	$from[] = "/<clID>[^<]*<\/clID>/i";
+	$to[] = '<clID>Not disclosed clID</clID>';
+	$from[] = "/<pw>[^<]*<\/pw>/i";
+	$to[] = '<pw>Not disclosed pw</pw>';
+	$sendforlog = preg_replace($from, $to, $send);
+	logModuleCall('epp',$action,$sendforlog,$responsedata);
+}
+
+function _ua_log($func, $params = false)
+{
+
+	// comment line below to see logs
+	return true;
+
+	$handle = fopen(dirname(__FILE__) . '/epp.log', 'a');
+	ob_start();
+	echo "\n================= $func =================\n";
+	print_r($params);
+	$text = ob_get_contents();
+	ob_end_clean();
+	fwrite($handle, $text);
+	fclose($handle);
+}
+
+function _ua_create_table()
+{
+
+	//	Capsule::schema()->table('tbldomains', function (Blueprint $table) {
+	//		$table->increments('id')->unsigned()->change();
+	//	});
+
+	if (!Capsule::schema()->hasTable('ua_domain_status')) {
+		try {
+			Capsule::schema()->create('ua_domain_status',
+			function (Blueprint $table)
+			{
+				/** @var \Illuminate\Database\Schema\Blueprint $table */
+				$table->increments('id');
+				$table->integer('domain_id');
+
+				// $table->integer('domain_id')->unsigned();
+
+				$table->enum('status', array(
+					'clientDeleteProhibited',
+					'clientHold',
+					'clientRenewProhibited',
+					'clientTransferProhibited',
+					'clientUpdateProhibited',
+					'inactive',
+					'ok',
+					'pendingCreate',
+					'pendingDelete',
+					'pendingRenew',
+					'pendingTransfer',
+					'pendingUpdate',
+					'serverDeleteProhibited',
+					'serverHold',
+					'serverRenewProhibited',
+					'serverTransferProhibited',
+					'serverUpdateProhibited'
+				))->default('ok');
+				$table->unique(array(
+					'domain_id',
+					'status'
+				));
+				$table->foreign('domain_id')->references('id')->on('tbldomains')->onDelete('cascade');
+			});
+		}
+
+		catch(Exception $e) {
+			echo "Unable to create table 'ua_domain_status': {$e->getMessage() }";
+		}
+	}
+}
+
+function _ua_create_column()
+{
+	if (!Capsule::schema()->hasColumn('tbldomains', 'trstatus')) {
+		try {
+			Capsule::schema()->table('tbldomains',
+			function (Blueprint $table)
+			{
+				$table->enum('trstatus', array(
+					'clientApproved',
+					'clientCancelled',
+					'clientRejected',
+					'pending',
+					'serverApproved',
+					'serverCancelled'
+				))->nullable()->after('status');
+			});
+		}
+
+		catch(Exception $e) {
+			echo "Unable to alter table 'tbldomains' add column 'trstatus': {$e->getMessage() }";
+		}
 	}
 }
