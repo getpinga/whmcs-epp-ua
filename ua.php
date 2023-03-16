@@ -1249,6 +1249,37 @@ function ua_GetEPPCode($params = array())
 		$r = $r->response->resData->children('http://hostmaster.ua/epp/domain-1.1')->infData;
 		$eppcode = (string)$r->authInfo->pw;
 
+if (empty($eppcode)) {
+		$eppcode = $s->generateObjectPW();
+		$from[] = '/{{ name }}/';
+		$to[] = htmlspecialchars($params['domainname']);
+		$from[] = '/{{ authInfo }}/';
+		$to[] = $eppcode;
+		$from[] = '/{{ clTRID }}/';
+		$clTRID = str_replace('.', '', round(microtime(1), 3));
+		$to[] = htmlspecialchars($params['registrarprefix'] . '-domain-update-' . $clTRID);
+		$xml = preg_replace($from, $to, '<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<epp xmlns="urn:ietf:params:xml:ns:epp-1.0"
+  xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xsi:schemaLocation="urn:ietf:params:xml:ns:epp-1.0 epp-1.0.xsd">
+  <command>
+	<update>
+	  <domain:update
+         xmlns:domain="http://hostmaster.ua/epp/domain-1.1">
+		<domain:name>{{ name }}</domain:name>
+       <domain:chg>
+         <domain:authInfo>
+           <domain:pw>{{ authInfo }}</domain:pw>
+         </domain:authInfo>
+       </domain:chg>
+	  </domain:update>
+	</update>
+	<clTRID>{{ clTRID }}</clTRID>
+  </command>
+</epp>');
+		$r = $s->write($xml, __FUNCTION__);
+}
+
 		// If EPP Code is returned, return it for display to the end user
 		if (!empty($s)) {
 			$s->logout($params['registrarprefix']);
@@ -2111,5 +2142,3 @@ function _ua_create_column()
 		}
 	}
 }
-
-?>
