@@ -4,7 +4,7 @@
 
 2. Place the repository as **ua** directory in `[WHMCS]/modules/registrars`, place your key.pem and cert.pem files in the same ua directory.
 
-3. Activate from Configuration -> Apps & Integrations -> (search for _epp_) -> Activate
+3. Activate from Configuration -> Apps & Integrations -> (search for .UA) -> Activate
 
 4. Configure from Configuration -> System Settings -> Domain Registrars
 
