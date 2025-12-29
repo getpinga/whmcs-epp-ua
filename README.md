@@ -1,25 +1,42 @@
-# WHMCS Module Installation instructions
+# ⚠️ Deprecated: WHMCS EPP UA
 
-1. Download and install [WHMCS](https://whmcs.com/)
+This repository is **deprecated** and is no longer maintained.
 
-2. Place the repository as **ua** directory in `[WHMCS]/modules/registrars`, place your key.pem and cert.pem files in the same ua directory.
+It has been replaced by the actively maintained, generic WHMCS EPP registrar module:
 
-3. Activate from Configuration -> Apps & Integrations -> (search for .UA) -> Activate
+👉 https://github.com/getnamingo/whmcs-epp-registrar
 
-4. Configure from Configuration -> System Settings -> Domain Registrars
+---
 
-5. Add a new TLD using Configuration -> System Settings -> Domain Pricing
+## What changed?
 
-6. Create a **whois.json** file in `[WHMCS]/resources/domains` and add the following:
+This project was created for UA-style EPP integrations. It is now obsolete and has been superseded by a cleaner, more flexible module intended for broad EPP registry compatibility.
 
-```
-[
-    {
-        "extensions": ".ua",
-        "uri": "socket://your.whois.url",
-        "available": "NOT FOUND"
-    }
-]
-```
+---
 
-You should be good to go now.
+## What should you do?
+
+- **New installations**: use  
+  https://github.com/getnamingo/whmcs-epp-registrar
+
+- **Existing installations**: plan migration to  
+  https://github.com/getnamingo/whmcs-epp-registrar
+
+No further updates or fixes will be released for this repository.
+
+---
+
+## Status
+
+- ❌ Deprecated
+- ❌ No active development
+- ❌ No support
+
+Use the current project instead:  
+https://github.com/getnamingo/whmcs-epp-registrar
+
+---
+
+## License
+
+This repository remains available under its original license.
